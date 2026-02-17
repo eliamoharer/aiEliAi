@@ -3,10 +3,10 @@ import UniformTypeIdentifiers
 import UIKit
 
 struct ChatView: View {
-    var chatManager: ChatManager
-    var llmEngine: LLMEngine
-    var agentManager: AgentManager
-    var modelDownloader: ModelDownloader
+    @Environment(ChatManager.self) private var chatManager: ChatManager
+    @Environment(LLMEngine.self) private var llmEngine: LLMEngine
+    @Environment(AgentManager.self) private var agentManager: AgentManager
+    @Environment(ModelDownloader.self) private var modelDownloader: ModelDownloader
     var onShowSettings: () -> Void = {}
     var isCollapsed: Bool = false
     @Environment(\.colorScheme) private var colorScheme

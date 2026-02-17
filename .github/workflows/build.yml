@@ -1,0 +1,167 @@
+name: Build EliAI IPA
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build and Package IPA
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Select Xcode With iOS SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          try_xcode() {
+            local xcode="$1"
+            echo "Trying $xcode"
+            sudo xcode-select -s "$xcode/Contents/Developer"
+            if xcrun --sdk iphoneos --show-sdk-version >/dev/null 2>&1; then
+              echo "Selected $xcode"
+              xcodebuild -version
+              xcrun --sdk iphoneos --show-sdk-version
+              return 0
+            fi
+            return 1
+          }
+
+          ALL_XCODES="$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -r || true)"
+          if [ -z "$ALL_XCODES" ]; then
+            echo "No Xcode installs found in /Applications."
+            exit 1
+          fi
+
+          # Prefer stable installs first.
+          while IFS= read -r xcode; do
+            [ -z "$xcode" ] && continue
+            case "$xcode" in
+              *Release_Candidate*) continue ;;
+            esac
+            if try_xcode "$xcode"; then
+              exit 0
+            fi
+          done <<< "$ALL_XCODES"
+
+          # Fallback to RC installs.
+          while IFS= read -r xcode; do
+            [ -z "$xcode" ] && continue
+            case "$xcode" in
+              *Release_Candidate*) ;;
+              *) continue ;;
+            esac
+            if try_xcode "$xcode"; then
+              exit 0
+            fi
+          done <<< "$ALL_XCODES"
+
+          echo "No installed Xcode with iphoneos SDK found."
+          exit 1
+
+      - name: Capture Xcode Build Info
+        id: xcode_info
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "xcode_version=$(xcodebuild -version | awk 'NR==1 {print $2}')" >> "$GITHUB_OUTPUT"
+          echo "xcode_build=$(xcodebuild -version | awk 'NR==2 {print $3}')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore SwiftPM Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .spm
+            ~/Library/Caches/org.swift.swiftpm
+          key: ${{ runner.os }}-xcode-${{ steps.xcode_info.outputs.xcode_version }}-${{ steps.xcode_info.outputs.xcode_build }}-spm-${{ hashFiles('project.yml', 'Package.swift') }}
+          restore-keys: |
+            ${{ runner.os }}-xcode-${{ steps.xcode_info.outputs.xcode_version }}-${{ steps.xcode_info.outputs.xcode_build }}-spm-
+
+      - name: Cache Build Artifacts (DerivedData)
+        uses: actions/cache@v4
+        with:
+          path: |
+            build
+            ~/Library/Developer/Xcode/DerivedData
+          key: ${{ runner.os }}-xcode-${{ steps.xcode_info.outputs.xcode_version }}-${{ steps.xcode_info.outputs.xcode_build }}-deriveddata-${{ hashFiles('project.yml', 'Package.swift') }}
+          restore-keys: |
+            ${{ runner.os }}-xcode-${{ steps.xcode_info.outputs.xcode_version }}-${{ steps.xcode_info.outputs.xcode_build }}-deriveddata-
+
+      - name: Install XcodeGen
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v xcodegen >/dev/null 2>&1; then
+            xcodegen version
+          else
+            brew install xcodegen
+          fi
+
+      - name: Generate Xcode Project
+        run: xcodegen generate
+
+      - name: Resolve Package Dependencies
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project EliAI.xcodeproj \
+            -scheme EliAI \
+            -skipPackagePluginValidation \
+            -clonedSourcePackagesDirPath .spm
+
+      - name: Build Release App (Device)
+        run: |
+          set -eo pipefail
+          xcodebuild build \
+            -project EliAI.xcodeproj \
+            -scheme EliAI \
+            -destination 'generic/platform=iOS' \
+            -configuration Release \
+            -derivedDataPath build \
+            IDECustomDerivedDataLocation=$PWD/build \
+            -clonedSourcePackagesDirPath .spm \
+            -disableAutomaticPackageResolution \
+            -parallelizeTargets \
+            -jobs 4 \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            DEBUG_INFORMATION_FORMAT=dwarf \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            SWIFT_COMPILATION_MODE=wholemodule \
+            SWIFT_OPTIMIZATION_LEVEL=-O \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO | tee xcodebuild.log
+
+      - name: Show Build Errors On Failure
+        if: failure()
+        run: |
+          echo "----- xcodebuild errors -----"
+          grep -n " error: " xcodebuild.log || true
+          echo "----- tail xcodebuild.log -----"
+          tail -n 250 xcodebuild.log || true
+
+      - name: Upload Build Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: xcodebuild.log
+
+      - name: Package IPA
+        run: |
+          mkdir -p Payload
+          cp -r build/Build/Products/Release-iphoneos/EliAI.app Payload/
+          /usr/bin/zip -r EliAI.ipa Payload
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: EliAI-IPA
+          path: EliAI.ipa

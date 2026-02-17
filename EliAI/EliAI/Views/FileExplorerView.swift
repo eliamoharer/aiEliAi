@@ -1,9 +1,9 @@
 import SwiftUI
 
 struct FileExplorerView: View {
-    var fileSystem: FileSystemManager
-    var chatManager: ChatManager
-    var modelDownloader: ModelDownloader
+    @Environment(FileSystemManager.self) private var fileSystem: FileSystemManager
+    @Environment(ChatManager.self) private var chatManager: ChatManager
+    @Environment(ModelDownloader.self) private var modelDownloader: ModelDownloader
     var isOpaque: Bool
     var onSelectFile: (FileItem) -> Void
 
